@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WhtapBot</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <span class="logo"><svg viewBox="0 0 24 24"><path d="M2 13l4 4L14 8"/><path d="M10 15l2 2L22 7"/></svg></span>
+      <span>WhtapBot</span>
+      <button class="close iconbtn" id="closeNav" aria-label="Close menu"></button>
+    </div>
+    <nav id="nav"></nav>
+    <div class="search"><span id="searchIcon"></span><input id="search" placeholder="Search scheduled messages…" autocomplete="off"></div>
+    <div class="filters" id="filters"></div>
+    <div class="sidelist" id="sideList"></div>
+    <div class="usercard"><span class="avatar" id="meAvatar" style="background:var(--gray)">?</span>
+      <div><b id="meName">Not connected</b><small id="meNum">Link WhatsApp to start</small></div></div>
+  </aside>
+
+  <section class="main">
+    <header class="topbar">
+      <button class="menu iconbtn" id="menuBtn" aria-label="Menu"></button>
+      <h1 id="viewTitle">Message Planner</h1>
+      <div class="pills"><button class="pill" id="connPill"><span class="dot"></span><span class="lbl" id="connText">Connecting…</span></button></div>
+    </header>
+    <div class="view" id="view"></div>
+  </section>
+</div>
+
+<dialog id="modal">
+  <form method="dialog" id="mform" novalidate>
+    <div class="mhead"><h3 id="mTitle">New message</h3><button type="button" class="iconbtn" id="mClose" aria-label="Close"></button></div>
+    <div class="mbody">
+      <div id="mStatus"></div>
+      <fieldset id="mFields">
+        <label for="pick">Choose a saved contact or group</label>
+        <select id="pick" class="field"></select>
+        <div class="two">
+          <div><label for="to">Phone number (with country code)</label><input id="to" class="field" placeholder="e.g. 14155550100" inputmode="tel" autocomplete="off"></div>
+          <div><label for="cname">Name (optional)</label><input id="cname" class="field" placeholder="e.g. Abhilasha" autocomplete="off"></div>
+        </div>
+        <div class="row" style="justify-content:space-between;margin-top:12px">
+          <label for="text" style="margin:0">Message</label>
+          <span class="row"><select id="tpl" class="field" style="width:auto;padding:3px 8px;font-size:12px"></select>
+            <button type="button" class="chip" id="insName" title="Inserts the contact's first name when sent">+ {name}</button></span>
+        </div>
+        <textarea id="text" class="field" style="margin-top:4px" maxlength="4000"></textarea>
+        <div class="row" style="justify-content:space-between"><span class="hint">Use {name} to insert the contact's first name.</span>
+          <span class="hint"><button type="button" class="chip" id="saveTpl">Save as template</button> <span id="count">0</span>/4000</span></div>
+        <div class="two">
+          <div><label for="when">Send at</label><input id="when" type="datetime-local" class="field"></div>
+          <div><label for="repeat">Repeat</label>
+            <select id="repeat" class="field">
+              <option value="none">Does not repeat</option><option value="daily">Every day</option>
+              <option value="weekdays">Every weekday (Mon–Fri)</option><option value="weekly">Every week</option>
+              <option value="monthly">Every month</option>
+            </select></div>
+        </div>
+        <div class="row" style="margin-top:10px" id="chips"></div>
+      </fieldset>
+      <div class="err" id="mErr" style="margin-top:10px;min-height:1em"></div>
+    </div>
+    <div class="mfoot" id="mFoot"></div>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>
