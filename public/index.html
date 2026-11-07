@@ -2,8 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>WhtapBot</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#3b82f6">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="WhtapBot">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -37,6 +45,16 @@
     <div class="mhead"><h3 id="mTitle">New message</h3><button type="button" class="iconbtn" id="mClose" aria-label="Close"></button></div>
     <div class="mbody">
       <div id="mStatus"></div>
+
+      <div id="quickBox" class="quick">
+        <label for="quick">Quick add – type it the way you'd say it</label>
+        <div class="row" style="flex-wrap:nowrap">
+          <input id="quick" class="field" placeholder="wish Mom happy birthday every Nov 12 at 9am" autocomplete="off" style="flex:1">
+          <button type="button" class="btn soft" id="quickGo">Fill form</button>
+        </div>
+        <div id="quickNotes" class="notes"></div>
+      </div>
+
       <fieldset id="mFields">
         <label for="pick">Choose a saved contact or group</label>
         <select id="pick" class="field"></select>
@@ -44,24 +62,53 @@
           <div><label for="to">Phone number (with country code)</label><input id="to" class="field" placeholder="e.g. 14155550100" inputmode="tel" autocomplete="off"></div>
           <div><label for="cname">Name (optional)</label><input id="cname" class="field" placeholder="e.g. Abhilasha" autocomplete="off"></div>
         </div>
+
         <div class="row" style="justify-content:space-between;margin-top:12px">
           <label for="text" style="margin:0">Message</label>
           <span class="row"><select id="tpl" class="field" style="width:auto;padding:3px 8px;font-size:12px"></select>
-            <button type="button" class="chip" id="insName" title="Inserts the contact's first name when sent">+ {name}</button></span>
+            <button type="button" class="chip" id="insName" title="Inserts the contact's first name when sent">+ {name}</button>
+            <button type="button" class="chip" id="bdayBtn" title="Yearly repeat with a birthday greeting">🎂 Birthday</button></span>
         </div>
         <textarea id="text" class="field" style="margin-top:4px" maxlength="4000"></textarea>
-        <div class="row" style="justify-content:space-between"><span class="hint">Use {name} to insert the contact's first name.</span>
+        <div class="row" style="justify-content:space-between"><span class="hint">Use {name} for the contact's first name. With an attachment this is the caption.</span>
           <span class="hint"><button type="button" class="chip" id="saveTpl">Save as template</button> <span id="count">0</span>/4000</span></div>
+
+        <div id="attachBox" class="attach">
+          <input type="file" id="file" hidden>
+          <div class="row" style="flex-wrap:nowrap">
+            <button type="button" class="btn" id="attachBtn">📎 Attach photo, video, PDF or voice note</button>
+            <span id="attachInfo" class="attach-info"></span>
+          </div>
+          <label id="voiceRow" class="check" hidden><input type="checkbox" id="voice"> Send as a voice note</label>
+          <div id="attachWarn" class="hint" style="color:var(--amber)"></div>
+        </div>
+
         <div class="two">
           <div><label for="when">Send at</label><input id="when" type="datetime-local" class="field"></div>
+          <div><label for="tz">Timezone</label><select id="tz" class="field"></select></div>
+        </div>
+        <div class="row" style="margin-top:10px" id="chips"></div>
+
+        <div class="two">
+          <div><label for="window">Send window</label>
+            <select id="window" class="field">
+              <option value="0">Exactly at that time</option><option value="15">Within 15 minutes</option><option value="30">Within 30 minutes</option>
+              <option value="60">Within 1 hour</option><option value="120">Within 2 hours</option><option value="180">Within 3 hours</option><option value="240">Within 4 hours</option>
+            </select></div>
           <div><label for="repeat">Repeat</label>
             <select id="repeat" class="field">
               <option value="none">Does not repeat</option><option value="daily">Every day</option>
               <option value="weekdays">Every weekday (Mon–Fri)</option><option value="weekly">Every week</option>
-              <option value="monthly">Every month</option>
+              <option value="monthly">Every month</option><option value="yearly">Every year</option>
             </select></div>
         </div>
-        <div class="row" style="margin-top:10px" id="chips"></div>
+        <div id="windowHint" class="hint"></div>
+        <div id="endRow" class="two" hidden>
+          <div><label for="endType">Ends</label>
+            <select id="endType" class="field"><option value="never">Never</option><option value="date">On a date</option><option value="count">After a number of sends</option></select></div>
+          <div id="endDateBox" hidden><label for="endDate">Last day</label><input id="endDate" type="date" class="field"></div>
+          <div id="endCountBox" hidden><label for="endCount">Total sends</label><input id="endCount" type="number" min="1" max="1000" value="5" class="field"></div>
+        </div>
       </fieldset>
       <div class="err" id="mErr" style="margin-top:10px;min-height:1em"></div>
     </div>
@@ -69,6 +116,7 @@
   </form>
 </dialog>
 
+<script src="nl.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

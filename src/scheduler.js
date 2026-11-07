@@ -1,5 +1,6 @@
-import { messages } from './db.js';
-import { wa, sendText, SendError } from './whatsapp.js';
+import { messages, uploads } from './db.js';
+import { wa, sendOut, SendError } from './whatsapp.js';
+import { alertMessageProblem } from './alerts.js';
 import { MAX_ATTEMPTS, MAX_LATE_MINUTES } from './config.js';
 
 const TICK_MS = 5000;
@@ -23,10 +24,11 @@ async function tick() {
     for (const msg of messages.due(Date.now())) {
       if (!messages.claim(msg.id)) continue;
 
-      const lateMs = Date.now() - msg.send_at;
+      const lateMs = Date.now() - msg.next_attempt_at;
       if (MAX_LATE_MINUTES > 0 && lateMs > MAX_LATE_MINUTES * 60_000) {
         messages.markMissed(msg.id, `Overdue by ${Math.round(lateMs / 60_000)} min (server was off or disconnected), so it was not sent.`);
         messages.scheduleNext(msg);
+        alertMessageProblem(msg, 'missed', 'server was off or disconnected at send time');
         continue;
       }
 
@@ -34,7 +36,10 @@ async function tick() {
       first = false;
 
       try {
-        await sendText(msg.recipient, personalize(msg.text, msg.name));
+        const media = msg.upload_id
+          ? { path: uploads.pathOf(uploads.get(msg.upload_id) ?? { filename: '__missing__' }), mime: msg.up_mime, kind: msg.up_kind, name: msg.up_name }
+          : null;
+        await sendOut(msg.recipient, { text: personalize(msg.text, msg.name), media });
         messages.markSent(msg.id);
         messages.scheduleNext(msg);
         console.log(`[scheduler] sent #${msg.id} to ${msg.recipient}`);
@@ -48,6 +53,7 @@ async function tick() {
           messages.failNow(msg.id, e.message);
           messages.scheduleNext(msg);
           console.log(`[scheduler] failed #${msg.id}: ${e.message}`);
+          alertMessageProblem(msg, 'failed', e.message);
         } else {
           const wait = RETRY_BACKOFF_MS[Math.min(msg.attempts, RETRY_BACKOFF_MS.length - 1)];
           console.log(`[scheduler] #${msg.id} attempt ${msg.attempts + 1} failed (${e.message}); retrying in ${wait / 1000}s`);

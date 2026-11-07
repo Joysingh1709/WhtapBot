@@ -1,11 +1,16 @@
 import express from 'express';
+import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { PORT, HOST, APP_PASSWORD } from './config.js';
-import { messages, contacts, templates, REPEAT_RULES } from './db.js';
+import { PORT, HOST, APP_PASSWORD, DEFAULT_TZ, UPLOAD_MAX_MB, BACKUP_AT_UTC, BACKUP_KEEP } from './config.js';
+import { messages, contacts, templates, uploads, settings, REPEAT_RULES } from './db.js';
 import { wa, connect, logout, normalizeRecipient, listGroups } from './whatsapp.js';
 import { startScheduler } from './scheduler.js';
+import { startAlerts, notify, alertConfig } from './alerts.js';
+import { createBackup, listBackups, startBackupSchedule, backupsEnabled, BACKUP_DIR } from './backup.js';
+import { registerUpload } from './media.js';
+import { isValidTz, parseLocal, toLocalString, endOfDay, shiftInstant, nextOccurrence } from './time.js';
 
 const app = express();
 app.use(express.json({ limit: '100kb' }));
@@ -22,42 +27,93 @@ if (APP_PASSWORD) {
   });
 }
 
-const toApi = (m) => ({
-  id: m.id,
-  recipient: m.recipient,
-  name: m.name,
-  repeat: m.repeat_rule,
-  text: m.text,
-  sendAt: new Date(m.send_at).toISOString(),
-  status: m.status,
-  attempts: m.attempts,
-  error: m.error,
-  sentAt: m.sent_at ? new Date(m.sent_at).toISOString() : null,
-});
+const iso = (ms) => (ms == null ? null : new Date(ms).toISOString());
+
+const toApi = (m) => {
+  const tz = m.tz || DEFAULT_TZ;
+  return {
+    id: m.id,
+    recipient: m.recipient,
+    name: m.name,
+    text: m.text,
+    repeat: m.repeat_rule,
+    tz,
+    sendAt: iso(m.send_at),
+    localTime: toLocalString(m.send_at, tz), // what the clock in `tz` reads – used to fill the edit form
+    windowMin: m.window_min,
+    fireAt: iso(m.next_attempt_at), // when it will actually go (inside the window)
+    repeatUntil: m.repeat_until != null ? toLocalString(m.repeat_until, tz).slice(0, 10) : null,
+    repeatTimes: m.repeat_left == null ? null : m.repeat_left + 1, // sends remaining including this one
+    status: m.status,
+    attempts: m.attempts,
+    error: m.error,
+    sentAt: iso(m.sent_at),
+    attachment: m.upload_id && m.up_name ? { id: m.upload_id, name: m.up_name, mime: m.up_mime, kind: m.up_kind, size: m.up_size } : null,
+  };
+};
 
 app.get('/api/status', (_req, res) => {
-  res.json({ whatsapp: wa, serverTime: new Date().toISOString() });
+  res.json({ whatsapp: wa, serverTime: iso(Date.now()), defaultTz: DEFAULT_TZ });
 });
 
-app.get('/api/messages', (_req, res) => {
-  res.json(messages.list().map(toApi));
+app.get('/api/messages', (_req, res) => res.json(messages.list().map(toApi)));
+
+/** Future occurrences of recurring messages inside [from, to) – drawn as dashed ghosts on the calendar. */
+app.get('/api/occurrences', (req, res) => {
+  const from = Date.parse(req.query.from), to = Date.parse(req.query.to);
+  if (Number.isNaN(from) || Number.isNaN(to) || to - from > 400 * 86400_000) return res.status(400).json({ error: 'Bad range.' });
+  const out = [];
+  for (const m of messages.pendingRecurring()) {
+    const tz = m.tz || DEFAULT_TZ;
+    let t = m.send_at, left = m.repeat_left;
+    for (let i = 0; i < 800 && out.length < 3000; i++) {
+      if (left != null && left <= 0) break;
+      t = nextOccurrence(t, m.repeat_rule, tz, m.anchor_day, t);
+      if (m.repeat_until != null && t > m.repeat_until) break;
+      if (t >= to) break;
+      if (t >= from) out.push({ id: m.id, sendAt: iso(t) });
+      if (left != null) left -= 1;
+    }
+  }
+  res.json(out);
 });
 
 // Validates and normalises a message body. Returns { error } or { value }.
-function parseMessage(body, { allowPast = false } = {}) {
+function parseMessage(body) {
   const recipient = normalizeRecipient(body?.recipient);
   const text = String(body?.text ?? '').trim();
   const name = String(body?.name ?? '').trim().slice(0, 80) || null;
   const repeat = body?.repeat ?? 'none';
-  const sendAt = Date.parse(body?.sendAt);
+  const tz = body?.tz ? body.tz : DEFAULT_TZ;
+  const windowMin = Math.round(Number(body?.windowMin ?? 0));
+  const uploadId = body?.uploadId || null;
 
   if (!recipient) return { error: 'Enter a phone number with country code, e.g. 14155550100.' };
-  if (!text) return { error: 'Message is empty.' };
+  if (!isValidTz(tz)) return { error: 'Unknown timezone.' };
+  if (!text && !uploadId) return { error: 'Write a message or attach a file.' };
   if (text.length > 4000) return { error: 'Message is too long (max 4000 characters).' };
   if (!REPEAT_RULES.includes(repeat)) return { error: 'Invalid repeat option.' };
+  if (!Number.isFinite(windowMin) || windowMin < 0 || windowMin > 720) return { error: 'Send window must be 0–720 minutes.' };
+  if (uploadId && !uploads.get(uploadId)) return { error: 'Attachment not found. Please attach it again.' };
+
+  const sendAt = body?.sendAtLocal ? parseLocal(body.sendAtLocal, tz) : Date.parse(body?.sendAt);
   if (Number.isNaN(sendAt)) return { error: 'Invalid send time.' };
-  if (!allowPast && sendAt < Date.now() - 60_000) return { error: 'Send time is in the past.' };
-  return { value: { recipient, name, text, sendAt, repeat } };
+  if (sendAt + windowMin * 60_000 < Date.now() - 60_000) return { error: 'Send time is in the past.' };
+
+  let repeatUntil = null, repeatLeft = null;
+  if (repeat !== 'none') {
+    const endType = body?.endType ?? 'never';
+    if (endType === 'date') {
+      repeatUntil = /^\d{4}-\d{2}-\d{2}$/.test(body?.endDate ?? '') ? endOfDay(body.endDate, tz) : NaN;
+      if (Number.isNaN(repeatUntil)) return { error: 'Pick a valid end date.' };
+      if (repeatUntil < sendAt) return { error: 'The end date is before the first send.' };
+    } else if (endType === 'count') {
+      const n = Math.round(Number(body?.endCount));
+      if (!Number.isFinite(n) || n < 1 || n > 1000) return { error: 'Number of sends must be between 1 and 1000.' };
+      repeatLeft = n - 1;
+    } else if (endType !== 'never') return { error: 'Invalid end option.' };
+  }
+  return { value: { recipient, name, text, sendAt, repeat, tz, windowMin, uploadId, repeatUntil, repeatLeft } };
 }
 
 app.post('/api/messages', (req, res) => {
@@ -75,6 +131,43 @@ app.patch('/api/messages/:id', (req, res) => {
   res.json(toApi(messages.get(id)));
 });
 
+// Several messages at once: cancel / delete / shift / set a new time (used by multi-select and drag & drop).
+app.post('/api/messages/bulk', (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? [...new Set(req.body.ids.map(Number).filter(Number.isInteger))].slice(0, 500) : [];
+  const action = req.body?.action;
+  if (!ids.length) return res.status(400).json({ error: 'Nothing selected.' });
+  if (!['cancel', 'delete', 'shift', 'setTime'].includes(action)) return res.status(400).json({ error: 'Unknown action.' });
+
+  let newTime = null, shift = null;
+  if (action === 'setTime') {
+    newTime = Date.parse(req.body?.sendAt);
+    if (Number.isNaN(newTime)) return res.status(400).json({ error: 'Invalid time.' });
+  }
+  if (action === 'shift') {
+    const amount = Math.round(Number(req.body?.amount)), unit = req.body?.unit;
+    if (!Number.isFinite(amount) || !amount || !['minutes', 'hours', 'days'].includes(unit)) return res.status(400).json({ error: 'Invalid shift.' });
+    shift = { amount, unit };
+  }
+
+  let done = 0, skipped = 0;
+  for (const id of ids) {
+    const m = messages.get(id);
+    if (!m) { skipped++; continue; }
+    if (action === 'cancel') { messages.cancel(id) ? done++ : skipped++; continue; }
+    if (action === 'delete') { (messages.cancel(id) || messages.remove(id)) ? done++ : skipped++; continue; }
+    if (m.status !== 'pending') { skipped++; continue; }
+    const tz = m.tz || DEFAULT_TZ;
+    const sendAt = action === 'setTime' ? newTime : shiftInstant(m.send_at, tz, shift.amount, shift.unit);
+    if (sendAt + m.window_min * 60_000 < Date.now() - 60_000) { skipped++; continue; }
+    const ok = messages.update(id, {
+      recipient: m.recipient, name: m.name, text: m.text, sendAt, repeat: m.repeat_rule, tz, windowMin: m.window_min,
+      uploadId: m.upload_id, repeatUntil: m.repeat_until, repeatLeft: m.repeat_left, anchorDay: null, // re-derive from the new date
+    });
+    ok ? done++ : skipped++;
+  }
+  res.json({ done, skipped });
+});
+
 // Send immediately (also retries a failed/missed message).
 app.post('/api/messages/:id/send-now', (req, res) => {
   const m = messages.sendNow(Number(req.params.id));
@@ -89,6 +182,59 @@ app.delete('/api/messages/:id', (req, res) => {
   res.status(409).json({ error: 'Message not found or currently sending.' });
 });
 
+/* ---------- attachments ---------- */
+// Raw upload: body is the file bytes (Content-Type: application/octet-stream); metadata travels in headers.
+app.post('/api/uploads', (req, res) => {
+  const max = UPLOAD_MAX_MB * 1024 * 1024;
+  const name = decodeURIComponent(String(req.headers['x-filename'] || 'file')).slice(0, 200);
+  const mime = String(req.headers['x-mime'] || 'application/octet-stream').slice(0, 120);
+  if (Number(req.headers['content-length']) > max) return res.status(413).json({ error: `File is larger than ${UPLOAD_MAX_MB} MB.` });
+
+  const tmp = path.join(uploads.dir, `tmp-${crypto.randomUUID()}`);
+  const out = fs.createWriteStream(tmp);
+  let size = 0, aborted = false;
+  req.on('data', (c) => {
+    size += c.length;
+    if (size > max && !aborted) {
+      aborted = true;
+      req.unpipe(out); out.destroy(); fs.rmSync(tmp, { force: true });
+      res.status(413).json({ error: `File is larger than ${UPLOAD_MAX_MB} MB.` });
+    }
+  });
+  req.on('error', () => { out.destroy(); fs.rmSync(tmp, { force: true }); });
+  req.pipe(out);
+  out.on('finish', async () => {
+    if (aborted) return;
+    if (!size) { fs.rmSync(tmp, { force: true }); return res.status(400).json({ error: 'Empty file.' }); }
+    try {
+      const { upload, warnings } = await registerUpload(tmp, { name, mime, voice: req.query.voice === '1' });
+      res.status(201).json({ id: upload.id, name: upload.name, mime: upload.mime, kind: upload.kind, size: upload.size, warnings });
+    } catch (err) {
+      fs.rmSync(tmp, { force: true });
+      res.status(500).json({ error: 'Upload failed: ' + err.message });
+    }
+  });
+});
+
+app.get('/api/uploads/:id', (req, res) => {
+  const u = uploads.get(req.params.id);
+  if (!u) return res.status(404).json({ error: 'Not found.' });
+  const inline = ['image', 'video', 'audio', 'voice'].includes(u.kind);
+  res.set({
+    'Content-Type': u.mime.split(';')[0],
+    'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(u.name)}`,
+    'X-Content-Type-Options': 'nosniff',
+    'Content-Security-Policy': 'sandbox',
+  });
+  res.sendFile(uploads.pathOf(u));
+});
+
+app.delete('/api/uploads/:id', (req, res) => {
+  uploads.releaseIfUnused(req.params.id); // only removes it if no message uses it
+  res.json({ ok: true });
+});
+
+/* ---------- contacts, groups, templates ---------- */
 app.get('/api/contacts', (_req, res) => res.json(contacts.list()));
 app.delete('/api/contacts/:recipient', (req, res) => {
   contacts.remove(req.params.recipient);
@@ -116,6 +262,58 @@ app.delete('/api/templates/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+/* ---------- settings: alerts + backups ---------- */
+const settingsView = () => ({
+  alerts: alertConfig(),
+  backup: { enabled: backupsEnabled(), atUtc: BACKUP_AT_UTC, keep: BACKUP_KEEP, list: listBackups() },
+  defaultTz: DEFAULT_TZ,
+});
+app.get('/api/settings', (_req, res) => res.json(settingsView()));
+
+app.put('/api/settings', (req, res) => {
+  const b = req.body ?? {};
+  const bad = (m) => res.status(400).json({ error: m });
+  if ('ntfyTopic' in b) {
+    const v = String(b.ntfyTopic).trim();
+    if (v && !/^[A-Za-z0-9_-]{6,64}$/.test(v)) return bad('Topic must be 6–64 letters, digits, - or _.');
+    settings.set('ntfyTopic', v);
+  }
+  if ('ntfyServer' in b) {
+    const v = String(b.ntfyServer).trim().replace(/\/+$/, '');
+    if (v && !/^https?:\/\/[^\s/]+$/.test(v)) return bad('Server must look like https://ntfy.sh');
+    settings.set('ntfyServer', v);
+  }
+  if ('heartbeatUrl' in b) {
+    const v = String(b.heartbeatUrl).trim();
+    if (v && !/^https:\/\/\S+$/.test(v)) return bad('Heartbeat URL must start with https://');
+    settings.set('heartbeatUrl', v);
+  }
+  if ('alertsEnabled' in b) settings.set('alertsEnabled', b.alertsEnabled ? '1' : '0');
+  if ('alertWhatsApp' in b) settings.set('alertWhatsApp', b.alertWhatsApp ? '1' : '0');
+  res.json(settingsView());
+});
+
+app.post('/api/alerts/test', async (_req, res) => {
+  const r = await notify('Test alert', 'If you can read this, alerts are working.', { force: true, tags: ['bell'] });
+  if (!r.ntfy && !r.whatsapp) return res.status(502).json({ error: r.errors.join('; ') || 'No alert channel is configured.' });
+  res.json(r);
+});
+
+app.get('/api/backups', (_req, res) => res.json({ enabled: backupsEnabled(), list: listBackups() }));
+app.post('/api/backups', (_req, res) => {
+  try {
+    res.status(201).json(createBackup());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.get('/api/backups/:name/download', (req, res) => {
+  const list = listBackups();
+  const name = req.params.name === 'latest' ? list[0]?.name : req.params.name;
+  if (!name || !list.some((b) => b.name === name)) return res.status(404).json({ error: 'No such backup.' });
+  res.download(path.join(BACKUP_DIR, name), name);
+});
+
 app.post('/api/logout', async (_req, res) => {
   await logout();
   res.json({ ok: true });
@@ -129,3 +327,6 @@ app.listen(PORT, HOST, () => {
 
 connect().catch((err) => console.error('[whatsapp] failed to start', err));
 startScheduler();
+startAlerts();
+startBackupSchedule();
+setInterval(() => uploads.cleanupOrphans(), 3600_000);

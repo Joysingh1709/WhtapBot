@@ -13,3 +13,13 @@ export const MAX_LATE_MINUTES = Number(process.env.MAX_LATE_MINUTES ?? 120);
 export const MAX_ATTEMPTS = 4;
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
+
+// Timezone used for messages that don't specify one (and for legacy rows).
+export const DEFAULT_TZ = process.env.DEFAULT_TZ || 'UTC';
+// Backups are AES-256-GCM encrypted with this passphrase. Keep a copy somewhere safe, NOT only on the server.
+export const BACKUP_PASSPHRASE = process.env.BACKUP_PASSPHRASE || '';
+export const BACKUP_AT_UTC = process.env.BACKUP_AT_UTC || '21:30'; // 21:30 UTC = 03:00 IST
+export const BACKUP_KEEP = Number(process.env.BACKUP_KEEP || 14);
+export const UPLOAD_MAX_MB = Number(process.env.UPLOAD_MAX_MB || 64);
+fs.mkdirSync(path.join(DATA_DIR, 'uploads'), { recursive: true });
+fs.mkdirSync(path.join(DATA_DIR, 'backups'), { recursive: true });
