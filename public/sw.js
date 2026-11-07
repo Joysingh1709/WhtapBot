@@ -1,7 +1,7 @@
 // Minimal service worker: makes the app installable and keeps the shell available if the network blips.
 // API calls are never cached (they must always be live).
-const CACHE = 'whtapbot-shell-v2';
-const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'nl.js', 'manifest.webmanifest', 'icons/icon-192.png'];
+const CACHE = 'whtapbot-shell-v3';
+const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'nl.js', 'mobile.js', 'manifest.webmanifest', 'icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

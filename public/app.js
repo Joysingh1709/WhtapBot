@@ -35,6 +35,7 @@ const ICONS = {
   repeat: '<path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>',
   clip: '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
   check: '<path d="M20 6L9 17l-5-5"/>',
+  chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
   menu: '<path d="M3 12h18M3 6h18M3 18h18"/>', x: '<path d="M18 6L6 18M6 6l12 12"/>',
 };
 const ic = (n) => `<svg class="i" viewBox="0 0 24 24">${ICONS[n]}</svg>`;
@@ -54,6 +55,7 @@ let toastTimer;
 function toast(msg, bad = false) {
   document.querySelector('.toast')?.remove();
   const t = Object.assign(document.createElement('div'), { className: 'toast' + (bad ? ' bad' : ''), textContent: msg });
+  t.setAttribute('role', bad ? 'alert' : 'status');
   document.body.append(t);
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.remove(), 3500);
@@ -65,6 +67,7 @@ const state = {
   messages: [], occ: [], contacts: [], templates: [], groups: [], settings: null, wa: { status: 'starting' },
   search: '', filter: 'all', sig: '', scroll: null,
   selectMode: false, selected: new Set(),
+  mView: 'agenda', selDay: null, cSearch: '', // mobile
 };
 const NAV = [
   ['planner', 'Message Planner', 'calendar'], ['templates', 'Templates', 'template'],
@@ -111,8 +114,9 @@ function eventsBetween(from, to) {
 
 function calRange() {
   const c = startOfDay(state.cursor);
-  if (state.calView === 'day') return [c, addDays(c, 1)];
-  if (state.calView === 'week') { const s = addDays(c, -c.getDay()); return [s, addDays(s, 7)]; }
+  const view = isMobile() ? 'month' : state.calView;
+  if (view === 'day') return [c, addDays(c, 1)];
+  if (view === 'week') { const s = addDays(c, -c.getDay()); return [s, addDays(s, 7)]; }
   const first = new Date(c.getFullYear(), c.getMonth(), 1);
   const start = addDays(first, -first.getDay());
   const days = new Date(c.getFullYear(), c.getMonth() + 1, 0).getDate();
@@ -121,7 +125,7 @@ function calRange() {
 
 async function loadOcc() {
   if (state.view !== 'planner') return;
-  const [s, e] = calRange();
+  const [s, e] = isMobile() && state.mView === 'agenda' ? [startOfDay(new Date()), addDays(startOfDay(new Date()), 60)] : calRange();
   try { state.occ = await api(`/occurrences?from=${encodeURIComponent(s.toISOString())}&to=${encodeURIComponent(e.toISOString())}`); } catch { /* keep old */ }
 }
 
@@ -137,7 +141,7 @@ const timeLabel = (e) => (e.windowMin ? `${hm(e.date)}–${hm(new Date(e.date.ge
 const draggable = (e) => e.status === 'pending' && !e.ghost;
 
 const evHtml = (e, style = '') => `
-  <div class="ev ${e.status} ${e.ghost ? 'ghost' : ''} ${state.selected.has(e.id) && !e.ghost ? 'selected' : ''}" data-act="ev" data-id="${e.id}" ${draggable(e) ? 'data-drag="1"' : ''} style="${style}"
+  <div role="button" tabindex="0" class="ev ${e.status} ${e.ghost ? 'ghost' : ''} ${state.selected.has(e.id) && !e.ghost ? 'selected' : ''}" data-act="ev" data-id="${e.id}" ${draggable(e) ? 'data-drag="1"' : ''} style="${style}"
        title="${esc(dispName(e) + ' — ' + msgPreview(e) + (e.tz !== VIEWER_TZ ? ' (' + e.tz + ')' : ''))}">
     <span class="t">${timeLabel(e)}</span>${e.repeat !== 'none' ? ic('repeat') : ''}${e.attachment ? ic('clip') : ''}<span class="x">${esc(dispName(e) === e.name ? e.name + ': ' + msgPreview(e) : msgPreview(e))}</span>
   </div>`;
@@ -149,7 +153,7 @@ function monthView(start, end) {
   let cells = '';
   for (let d = new Date(start); d < end; d = addDays(d, 1)) {
     const list = byDay[dayKey(d)] ?? [];
-    cells += `<div class="cell ${d.getMonth() !== state.cursor.getMonth() ? 'other' : ''} ${sameDay(d, today) ? 'today' : ''}" data-act="cell" data-date="${d.getTime()}">
+    cells += `<div role="button" tabindex="0" aria-label="${esc(d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' }))}, ${list.length} message${list.length === 1 ? '' : 's'}. Press to add a message." class="cell ${d.getMonth() !== state.cursor.getMonth() ? 'other' : ''} ${sameDay(d, today) ? 'today' : ''}" data-act="cell" data-date="${d.getTime()}">
       <span class="dnum">${d.getDate()}</span>
       ${list.slice(0, 3).map((e) => evHtml(e)).join('')}
       ${list.length > 3 ? `<span class="more" data-act="more" data-date="${d.getTime()}">+${list.length - 3} more</span>` : ''}
@@ -230,18 +234,31 @@ function templatesView() {
       : '<div class="empty">No templates yet. Save the messages you send often.</div>'}</div>`;
 }
 
-function contactsView() {
-  const row = (name, sub, recipient) => `<div class="crow">${avatar(name)}<div class="grow"><b>${esc(name)}</b><small>${esc(sub)}</small></div>
-    <button class="btn soft" data-act="msgTo" data-r="${esc(recipient)}" data-n="${esc(name)}">${ic('plus')} Message</button></div>`;
-  const people = state.contacts.filter((c) => !isGroup(c.recipient));
-  return `<div class="page">
-    <div class="card"><h2>Contacts</h2>${people.length ? people.map((c) => `<div class="crow">${avatar(c.name || phoneOf(c.recipient))}
-      <div class="grow"><b>${esc(c.name || phoneOf(c.recipient))}</b><small>${esc(phoneOf(c.recipient))}</small></div>
-      <button class="btn soft" data-act="msgTo" data-r="${esc(c.recipient)}" data-n="${esc(c.name)}">${ic('plus')} Message</button>
-      <button class="iconbtn" data-act="delContact" data-r="${esc(c.recipient)}" aria-label="Remove">${ic('x')}</button></div>`).join('')
-      : '<div class="empty">Contacts are saved automatically when you schedule a message.</div>'}</div>
+function contactListsHtml() {
+  const q = state.cSearch.trim().toLowerCase(), digits = q.replace(/\D/g, '');
+  const hit = (name, id) => !q || (name || '').toLowerCase().includes(q) || (digits && id.includes(digits));
+  const main = (name, sub, r, n) => `<button type="button" class="crow-main" data-act="msgTo" data-r="${esc(r)}" data-n="${esc(n)}" aria-label="Message ${esc(name)}">${avatar(name)}
+      <span class="grow"><b>${esc(name)}</b><small>${esc(sub)}</small></span><span class="msgbtn">${ic('plus')}<span class="lbl">Message</span></span></button>`;
+  const person = (c) => {
+    const named = !!c.name, name = named ? c.name : phoneOf(c.recipient);
+    return `<div class="crow">${main(name, named ? phoneOf(c.recipient) : 'WhatsApp contact', c.recipient, c.name)}
+      <button class="iconbtn" data-act="delContact" data-r="${esc(c.recipient)}" aria-label="Remove ${esc(name)} from contacts">${ic('x')}</button></div>`;
+  };
+  const group = (g) => {
+    const name = (g.name || '').trim() || 'Unnamed group';
+    return `<div class="crow">${main(name, 'Group', g.id, g.name)}</div>`;
+  };
+  const people = state.contacts.filter((c) => !isGroup(c.recipient) && hit(c.name, c.recipient));
+  const groups = state.groups.filter((g) => hit(g.name, g.id));
+  return `<div class="card"><h2>Contacts</h2>${people.length ? people.map(person).join('')
+      : `<div class="empty">${q ? 'No contacts match.' : 'Contacts are saved automatically when you schedule a message.'}</div>`}</div>
     <div class="card"><h2>WhatsApp groups</h2>${state.wa.status !== 'open' ? '<div class="empty">Connect WhatsApp to see your groups.</div>'
-      : state.groups.length ? state.groups.map((g) => row(g.name, 'Group', g.id)).join('') : '<div class="empty">No groups found.</div>'}</div></div>`;
+      : groups.length ? groups.map(group).join('') : `<div class="empty">${q ? 'No groups match.' : 'No groups found.'}</div>`}</div>`;
+}
+
+function contactsView() {
+  return `<div class="page"><div class="msearch">${ic('search')}<input id="cSearch" type="search" placeholder="Search contacts and groups" value="${esc(state.cSearch)}" autocomplete="off" aria-label="Search contacts and groups"></div>
+    <div id="cLists">${contactListsHtml()}</div></div>`;
 }
 
 function connectionView() {
@@ -296,36 +313,33 @@ function settingsView() {
 
 /* ---------- sidebar + chrome ---------- */
 function renderChrome() {
+  const mobile = isMobile();
   const pending = state.messages.filter((m) => m.status === 'pending').length;
   $('nav').innerHTML = NAV.map(([id, label, icon]) => `<a href="#${id}" class="nav ${state.view === id ? 'active' : ''}">${ic(icon)}${label}${id === 'planner' && pending ? `<span class="count">${pending}</span>` : ''}</a>`).join('');
   $('filters').innerHTML = FILTERS.map(([id, l]) => `<button class="fchip ${state.filter === id ? 'on' : ''}" data-filter="${id}">${l}</button>`).join('');
-  $('viewTitle').textContent = NAV.find((n) => n[0] === state.view)[1];
+  const TITLES = { planner: mobile ? 'Schedule' : 'Message Planner', messages: 'Messages', more: 'More', contacts: 'Contacts & Groups', templates: 'Templates', connection: 'WhatsApp Connection', settings: 'Settings' };
+  $('viewTitle').textContent = TITLES[state.view] || '';
+  $('menuBtn').hidden = !(mobile && SUBVIEWS.includes(state.view)); // back arrow on sub-pages
 
   const wa = state.wa;
   $('connPill').className = 'pill ' + (wa.status === 'open' ? 'open' : '');
-  $('connText').textContent = wa.status === 'open' ? 'WhatsApp connected' : wa.status === 'qr' ? 'Scan QR to link' : 'WhatsApp connecting…';
+  $('connText').textContent = wa.status === 'open' ? (mobile ? 'Connected' : 'WhatsApp connected') : wa.status === 'qr' ? 'Scan QR' : (mobile ? 'Offline' : 'WhatsApp connecting…');
+  $('connPill').setAttribute('aria-label', 'WhatsApp status: ' + $('connText').textContent + '. Open connection settings.');
   $('meName').textContent = wa.status === 'open' ? `+${wa.me}` : 'Not connected';
   $('meNum').textContent = wa.status === 'open' ? 'Sending enabled' : 'Link WhatsApp to start';
   $('meAvatar').style.background = wa.status === 'open' ? 'var(--green)' : 'var(--gray)';
   $('meAvatar').textContent = wa.status === 'open' ? '✓' : '?';
+  if (mobile) renderTabbar();
 }
 
 function renderSideList() {
-  const q = state.search.trim().toLowerCase();
-  const match = (m) => {
-    const f = state.filter;
-    if (f === 'scheduled' && !['pending', 'sending'].includes(m.status)) return false;
-    if (f === 'sent' && m.status !== 'sent') return false;
-    if (f === 'failed' && !['failed', 'missed'].includes(m.status)) return false;
-    if (f === 'cancelled' && m.status !== 'cancelled') return false;
-    return !q || [m.name, m.recipient, m.text, m.attachment?.name].some((v) => (v || '').toLowerCase().includes(q));
-  };
-  const upcoming = state.messages.filter((m) => ['pending', 'sending'].includes(m.status) && match(m)).sort((a, b) => new Date(a.sendAt) - new Date(b.sendAt));
-  const rest = state.messages.filter((m) => !['pending', 'sending'].includes(m.status) && match(m));
+  if (isMobile()) return; // phones use the Messages tab instead of the sidebar
+  const q = state.search.trim();
+  const { upcoming, rest } = filteredMessages();
   const list = [...upcoming, ...rest];
   $('sideList').innerHTML = list.length ? list.map((m) => {
     const d = new Date(m.sendAt), name = dispName(m);
-    return `<div class="sitem ${m.status} ${state.selected.has(m.id) ? 'selected' : ''}" data-act="ev" data-id="${m.id}">${avatar(name)}
+    return `<div role="button" tabindex="0" class="sitem ${m.status} ${state.selected.has(m.id) ? 'selected' : ''}" data-act="ev" data-id="${m.id}">${avatar(name)}
       <div class="sbody"><div class="sname">${esc(name)}${m.repeat !== 'none' ? ic('repeat') : ''}${m.attachment ? ic('clip') : ''}</div><div class="stext">${esc(msgPreview(m))}</div>
       <div class="smeta"><b>${rel(d)}</b><span>${timeLabel({ date: d, windowMin: m.windowMin })} · ${d.getDate()} ${MONTHS[d.getMonth()].slice(0, 3)}</span><span class="tag ${m.status}">${statusLabel(m.status)}</span></div></div></div>`;
   }).join('') : `<div class="empty">${q || state.filter !== 'all' ? 'No messages match.' : 'Nothing scheduled yet.<br>Click “New message” to start.'}</div>`;
@@ -334,7 +348,8 @@ function renderSideList() {
 function renderView() {
   const view = $('view');
   const keep = $('tgWrap')?.scrollTop;
-  view.innerHTML = { planner: plannerView, templates: templatesView, contacts: contactsView, connection: connectionView, settings: settingsView }[state.view]();
+  const views = { planner: isMobile() ? mobilePlanner : plannerView, messages: messagesView, more: moreView, templates: templatesView, contacts: contactsView, connection: connectionView, settings: settingsView };
+  view.innerHTML = (views[state.view] || plannerView)();
   const wrap = $('tgWrap');
   if (wrap) wrap.scrollTop = keep ?? state.scroll ?? 8 * ROW - 20; // first paint: show ~8am
 }
@@ -378,10 +393,12 @@ const tzList = (() => {
 })();
 $('tz').innerHTML = tzList.map((z) => `<option value="${esc(z)}">${esc(z)}${z === VIEWER_TZ ? ' (this device)' : ''}</option>`).join('');
 
-function setWhen(date) { $('when').value = fmtInTz(date, $('tz').value); updateHint(); } // wall time in the chosen zone
+// A saved timezone may be spelled differently from this browser's list (e.g. Asia/Kolkata vs Asia/Calcutta): make sure it is selectable.
+function ensureTz(z) { if (z && ![...$('tz').options].some((o) => o.value === z)) $('tz').add(new Option(z, z)); }
+function setWhen(date) { $('when').value = fmtInTz(date, $('tz').value || VIEWER_TZ); updateHint(); } // wall time in the chosen zone
 
 function renderChips() {
-  const tz = $('tz').value, nowWall = fmtInTz(new Date(), tz), today = nowWall.slice(0, 10), nowMin = +nowWall.slice(11, 13) * 60 + +nowWall.slice(14, 16);
+  const tz = $('tz').value || VIEWER_TZ, nowWall = fmtInTz(new Date(), tz), today = nowWall.slice(0, 10), nowMin = +nowWall.slice(11, 13) * 60 + +nowWall.slice(14, 16);
   $('chips').innerHTML = `<button type="button" class="chip" data-in="10">in 10 min</button><button type="button" class="chip" data-in="60">in 1 hour</button>
     <span class="hint" style="margin:0 2px 0 8px">Today morning:</span>` +
     [8, 9, 10, 11].map((h) => `<button type="button" class="chip" data-h="${h}" ${h * 60 <= nowMin ? 'disabled' : ''}>${h} AM</button>`).join('') +
@@ -463,7 +480,7 @@ async function openModal({ message = null, prefill = {} } = {}) {
   $('to').value = m.recipient ?? prefill.recipient ?? '';
   $('cname').value = m.name ?? prefill.name ?? '';
   $('text').value = m.text ?? prefill.text ?? '';
-  $('tz').value = m.tz ?? VIEWER_TZ;
+  ensureTz(m.tz); $('tz').value = m.tz ?? VIEWER_TZ;
   $('repeat').value = m.repeat ?? 'none';
   $('window').value = String(m.windowMin ?? 0);
   $('endType').value = m.repeatUntil ? 'date' : m.repeatTimes ? 'count' : 'never';
@@ -475,6 +492,8 @@ async function openModal({ message = null, prefill = {} } = {}) {
   $('chips').hidden = !open;
   att = m.attachment ? { upload: m.attachment, isNew: false } : null;
   renderAttach(); renderChips(); updateEndRow(); updateHint();
+  $('moreOpts').open = !!message && (m.tz !== VIEWER_TZ || m.windowMin > 0);
+  $('quickBox').open = !isMobile();
 
   const info = [];
   if (message && !open) {
@@ -488,8 +507,9 @@ async function openModal({ message = null, prefill = {} } = {}) {
 
   const btn = (act, label, cls = '') => `<button type="button" class="btn ${cls}" data-m="${act}">${label}</button>`;
   $('mFoot').innerHTML = !message ? `<span class="spacer"></span>${btn('cancel', 'Close')}${btn('save', 'Schedule', 'primary')}`
-    : open ? `${btn('delete', 'Cancel message', 'danger')}${btn('dup', 'Duplicate')}<span class="spacer"></span>${btn('now', 'Send now')}${btn('save', 'Save changes', 'primary')}`
+    : open ? `${btn('delete', 'Cancel send', 'danger')}${btn('dup', 'Duplicate')}<span class="spacer"></span>${btn('now', 'Send now')}${btn('save', 'Save changes', 'primary')}`
     : `${btn('delete', 'Remove', 'danger')}${btn('dup', 'Duplicate')}<span class="spacer"></span>${['failed', 'missed'].includes(m.status) ? btn('now', 'Retry now', 'primary') : ''}${btn('cancel', 'Close')}`;
+  $('mFoot').classList.toggle('many', $('mFoot').querySelectorAll('.btn').length > 3); // edit mode has more buttons: stack them on phones
   if (!modal.open) modal.showModal();
 }
 
@@ -561,7 +581,7 @@ $('saveTpl').onclick = async () => {
 };
 $('chips').onclick = (e) => {
   const b = e.target.closest('button'); if (!b) return;
-  const tz = $('tz').value;
+  const tz = $('tz').value || VIEWER_TZ;
   if (b.dataset.in) setWhen(new Date(Date.now() + b.dataset.in * 60_000));
   if (b.dataset.h) { $('when').value = `${fmtInTz(new Date(), tz).slice(0, 10)}T${p2(b.dataset.h)}:00`; updateHint(); }
 };
@@ -594,6 +614,7 @@ function quickFill() {
   if (r.endDate) $('endDate').value = r.endDate;
   $('window').value = [0, 15, 30, 60, 120, 180, 240].includes(r.windowMin) ? String(r.windowMin) : (r.windowMin ? '240' : '0');
   updateEndRow(); updateHint(); renderChips();
+  if (r.windowMin) $('moreOpts').open = true;
   const missing = [!r.recipient && 'a phone number', !r.text && 'the message', !r.when && 'a time'].filter(Boolean);
   $('quickNotes').innerHTML = (r.notes.length ? r.notes.map((n) => `<span class="note">${esc(n)}</span>`).join('') : '') +
     (missing.length ? `<span class="note warn">Still needed: ${missing.join(', ')}</span>` : '<span class="note ok">Looks good – check and press Schedule</span>');
@@ -604,7 +625,7 @@ $('quickGo').onclick = quickFill;
 /* ---------- calendar interactions ---------- */
 function shift(dir) {
   const c = new Date(state.cursor);
-  if (state.calView === 'month') c.setMonth(c.getMonth() + dir, 1);
+  if (state.calView === 'month' || isMobile()) c.setMonth(c.getMonth() + dir, 1);
   else c.setDate(c.getDate() + dir * (state.calView === 'week' ? 7 : 1));
   state.cursor = c; state.scroll = null; refresh();
 }
@@ -727,6 +748,10 @@ $('view').addEventListener('click', async (e) => {
       case 'today': state.cursor = new Date(); state.scroll = null; return refresh();
       case 'calview': state.calView = el.dataset.v; state.scroll = null; return refresh();
       case 'new': return openModal();
+      case 'mview': state.mView = el.dataset.v; state.scroll = null; $('view').scrollTop = 0; return refresh();
+      case 'mday': { const d = new Date(+el.dataset.date); state.selDay = d; if (!sameMonth(d, state.cursor)) { state.cursor = new Date(d); return refresh(); } return renderView(); }
+      case 'mtoday': state.cursor = new Date(); state.selDay = new Date(); return refresh();
+      case 'mfilter': state.filter = el.dataset.f; return renderView();
       case 'selectToggle': state.selectMode = !state.selectMode; if (!state.selectMode) state.selected.clear(); state.sig = ''; renderSideList(); return renderView();
       case 'selClear': state.selected.clear(); state.sig = ''; renderSideList(); return renderView();
       case 'bulkCancel': if (confirm(`Cancel/remove ${state.selected.size} message(s)? Scheduled ones are cancelled; finished ones are removed from the list.`)) await bulk({ action: 'delete' }, 'Done'); return;
@@ -786,16 +811,28 @@ $('connPill').onclick = () => (location.hash = '#connection');
 
 function route() {
   const v = location.hash.slice(1);
-  state.view = NAV.some((n) => n[0] === v) ? v : 'planner';
+  const valid = isMobile() ? ['planner', 'messages', 'contacts', 'more', 'templates', 'connection', 'settings'] : NAV.map((n) => n[0]);
+  state.view = valid.includes(v) ? v : 'planner';
   document.body.classList.remove('nav-open');
-  if (state.view === 'templates') loadTemplates().then(renderAll);
+  $('view').scrollTop = 0;
+  if (state.view === 'templates' || state.view === 'more') loadTemplates().then(renderAll);
   else if (state.view === 'contacts') { loadContacts().then(renderAll); loadGroups(); }
   else if (state.view === 'settings') loadSettings().then(renderAll);
   else refresh();
 }
 window.addEventListener('hashchange', route);
-$('menuBtn').innerHTML = ic('menu'); $('closeNav').innerHTML = ic('x'); $('mClose').innerHTML = ic('x'); $('searchIcon').innerHTML = ic('search');
-$('menuBtn').onclick = () => document.body.classList.add('nav-open');
+$('tabbar').addEventListener('click', (e) => { if (e.target.closest('[data-new]')) openModal(); });
+$('view').addEventListener('input', (e) => {
+  if (e.target.id === 'mSearch') { state.search = e.target.value; $('mList').innerHTML = messageListHtml(); }
+  if (e.target.id === 'cSearch') { state.cSearch = e.target.value; $('cLists').innerHTML = contactListsHtml(); }
+});
+// Enter/Space activate anything that acts like a button (calendar chips, cards) for keyboard and screen-reader users.
+document.addEventListener('keydown', (e) => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('[role="button"][data-act]')) { e.preventDefault(); e.target.click(); }
+});
+mq.addEventListener('change', () => { route(); });
+$('menuBtn').innerHTML = ic('left'); $('menuBtn').setAttribute('aria-label', 'Back'); $('closeNav').innerHTML = ic('x'); $('mClose').innerHTML = ic('x'); $('searchIcon').innerHTML = ic('search');
+$('menuBtn').onclick = () => (location.hash = '#more');
 $('closeNav').onclick = () => document.body.classList.remove('nav-open');
 
 route();

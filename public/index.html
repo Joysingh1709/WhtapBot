@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>WhtapBot</title>
 <link rel="manifest" href="manifest.webmanifest">
-<meta name="theme-color" content="#3b82f6">
+<meta name="theme-color" content="#f5f8fc" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#131a22" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="WhtapBot">
@@ -40,20 +41,22 @@
   </section>
 </div>
 
-<dialog id="modal">
+<nav id="tabbar" class="tabbar" aria-label="Main"></nav>
+
+<dialog id="modal" aria-labelledby="mTitle">
   <form method="dialog" id="mform" novalidate>
     <div class="mhead"><h3 id="mTitle">New message</h3><button type="button" class="iconbtn" id="mClose" aria-label="Close"></button></div>
     <div class="mbody">
       <div id="mStatus"></div>
 
-      <div id="quickBox" class="quick">
-        <label for="quick">Quick add – type it the way you'd say it</label>
+      <details id="quickBox" class="quick" open>
+        <summary>✨ Quick add – type it the way you'd say it</summary>
         <div class="row" style="flex-wrap:nowrap">
           <input id="quick" class="field" placeholder="wish Mom happy birthday every Nov 12 at 9am" autocomplete="off" style="flex:1">
           <button type="button" class="btn soft" id="quickGo">Fill form</button>
         </div>
         <div id="quickNotes" class="notes"></div>
-      </div>
+      </details>
 
       <fieldset id="mFields">
         <label for="pick">Choose a saved contact or group</label>
@@ -83,32 +86,35 @@
           <div id="attachWarn" class="hint" style="color:var(--amber)"></div>
         </div>
 
-        <div class="two">
-          <div><label for="when">Send at</label><input id="when" type="datetime-local" class="field"></div>
-          <div><label for="tz">Timezone</label><select id="tz" class="field"></select></div>
-        </div>
-        <div class="row" style="margin-top:10px" id="chips"></div>
+        <label for="when">Send at</label>
+        <input id="when" type="datetime-local" class="field">
+        <div class="row chips" style="margin-top:10px" id="chips"></div>
 
-        <div class="two">
-          <div><label for="window">Send window</label>
-            <select id="window" class="field">
-              <option value="0">Exactly at that time</option><option value="15">Within 15 minutes</option><option value="30">Within 30 minutes</option>
-              <option value="60">Within 1 hour</option><option value="120">Within 2 hours</option><option value="180">Within 3 hours</option><option value="240">Within 4 hours</option>
-            </select></div>
-          <div><label for="repeat">Repeat</label>
-            <select id="repeat" class="field">
-              <option value="none">Does not repeat</option><option value="daily">Every day</option>
-              <option value="weekdays">Every weekday (Mon–Fri)</option><option value="weekly">Every week</option>
-              <option value="monthly">Every month</option><option value="yearly">Every year</option>
-            </select></div>
-        </div>
-        <div id="windowHint" class="hint"></div>
+        <label for="repeat">Repeat</label>
+        <select id="repeat" class="field">
+          <option value="none">Does not repeat</option><option value="daily">Every day</option>
+          <option value="weekdays">Every weekday (Mon–Fri)</option><option value="weekly">Every week</option>
+          <option value="monthly">Every month</option><option value="yearly">Every year</option>
+        </select>
         <div id="endRow" class="two" hidden>
           <div><label for="endType">Ends</label>
             <select id="endType" class="field"><option value="never">Never</option><option value="date">On a date</option><option value="count">After a number of sends</option></select></div>
           <div id="endDateBox" hidden><label for="endDate">Last day</label><input id="endDate" type="date" class="field"></div>
           <div id="endCountBox" hidden><label for="endCount">Total sends</label><input id="endCount" type="number" min="1" max="1000" value="5" class="field"></div>
         </div>
+
+        <details id="moreOpts" class="more-opts">
+          <summary>More options <span class="hint">timezone · send window</span></summary>
+          <div class="two">
+            <div><label for="tz">Timezone</label><select id="tz" class="field"></select></div>
+            <div><label for="window">Send window</label>
+              <select id="window" class="field">
+                <option value="0">Exactly at that time</option><option value="15">Within 15 minutes</option><option value="30">Within 30 minutes</option>
+                <option value="60">Within 1 hour</option><option value="120">Within 2 hours</option><option value="180">Within 3 hours</option><option value="240">Within 4 hours</option>
+              </select></div>
+          </div>
+          <div id="windowHint" class="hint"></div>
+        </details>
       </fieldset>
       <div class="err" id="mErr" style="margin-top:10px;min-height:1em"></div>
     </div>
@@ -117,6 +123,7 @@
 </dialog>
 
 <script src="nl.js"></script>
+<script src="mobile.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
