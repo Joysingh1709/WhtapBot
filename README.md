@@ -16,6 +16,7 @@ the server process is running, so for "laptop closed" use, deploy it (see below)
 - **Alerts** via [ntfy](https://ntfy.sh) (and optionally WhatsApp to yourself): WhatsApp disconnected, message failed/missed, server restarted
 - **Heartbeat** for an external dead-man's switch (e.g. healthchecks.io) so you learn if the whole VM goes down
 - **Nightly encrypted backups** of the queue, WhatsApp login and pending attachments
+- **MCP server** – ask Claude "message Mom happy birthday tomorrow at 9" and it schedules it (see below)
 - **Installable PWA** – "Add to Home Screen" for a full-screen phone app
 
 ## Run locally
@@ -40,6 +41,7 @@ Needs Node 22.13+. For voice-note conversion locally, install `ffmpeg` (the Dock
 | `MAX_LATE_MINUTES` | `120` | Messages overdue by more than this (server was off) are marked `missed` instead of sent. `0` = always send. |
 | `BACKUP_PASSPHRASE` | _(none)_ | Enables nightly backups; 12+ characters. **Store a copy outside the server** – backups can't be opened without it. |
 | `BACKUP_AT_UTC` / `BACKUP_KEEP` | `21:30` / `14` | Backup time (UTC) and how many to keep |
+| `MCP_TOKEN` | _(none)_ | Switches on the MCP endpoint `POST /mcp` for Claude; clients must send `Authorization: Bearer <MCP_TOKEN>`. Use 24+ random characters. |
 | `UPLOAD_MAX_MB` | `64` | Largest attachment. WhatsApp itself limits photos/videos/audio to ~16 MB (documents can be larger). |
 
 Alerts, topic and heartbeat are configured in the app under **Settings** (stored in the database).
@@ -81,6 +83,34 @@ docker run --rm -v whtapbot-data:/data -v "$PWD":/b -e BACKUP_PASSPHRASE=... wht
 ```
 
 or locally: `BACKUP_PASSPHRASE=... node src/restore.js backup.wbk ./data`.
+
+## Use it from Claude (MCP)
+
+WhtapBot speaks MCP over HTTP at `/mcp`, so Claude can schedule, list, edit, cancel and send messages for you.
+Tools: `whatsapp_status`, `find_contact`, `schedule_message`, `list_scheduled_messages`, `update_scheduled_message`,
+`cancel_scheduled_message`, `send_message_now`. Attachments are not available through MCP.
+
+1. Generate a token and put it in the server's env file, then redeploy:
+   `openssl rand -hex 24 > ~/.whtapbot-mcp-token` and add `MCP_TOKEN=<that value>` to `~/whtapbot.env` on the VM.
+2. Connect Claude (your computer must be on the tailnet, since the server is private):
+
+   **Claude Code**
+   ```bash
+   claude mcp add --transport http whtapbot https://<machine>.<tailnet>.ts.net/mcp \
+     --header "Authorization: Bearer $(cat ~/.whtapbot-mcp-token)"
+   ```
+
+   **Claude Desktop** – add to `claude_desktop_config.json` (Settings → Developer → Edit config), then restart it:
+   ```json
+   { "mcpServers": { "whtapbot": {
+       "command": "node",
+       "args": ["/path/to/WhtapBot/tools/mcp-stdio.mjs"],
+       "env": { "WHTAPBOT_MCP_URL": "https://<machine>.<tailnet>.ts.net/mcp", "WHTAPBOT_MCP_TOKEN": "<token>" } } } }
+   ```
+3. Ask: "Schedule a message to Mom saying happy birthday every year on Nov 12 at 9am."
+
+The token is the only thing protecting the endpoint, so treat it like a password. claude.ai's web/mobile connectors need a
+public URL with OAuth, which this simple bearer-token server does not provide.
 
 ## Notes and risks
 

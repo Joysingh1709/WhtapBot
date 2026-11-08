@@ -23,3 +23,7 @@ export const BACKUP_KEEP = Number(process.env.BACKUP_KEEP || 14);
 export const UPLOAD_MAX_MB = Number(process.env.UPLOAD_MAX_MB || 64);
 fs.mkdirSync(path.join(DATA_DIR, 'uploads'), { recursive: true });
 fs.mkdirSync(path.join(DATA_DIR, 'backups'), { recursive: true });
+
+// Enables the MCP endpoint (POST /mcp) that lets Claude schedule messages. Clients must send
+// "Authorization: Bearer <MCP_TOKEN>". Leave empty to keep the endpoint switched off. Use 24+ random characters.
+export const MCP_TOKEN = process.env.MCP_TOKEN || '';
