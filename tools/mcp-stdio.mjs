@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Bridges Claude Desktop (which launches MCP servers as local commands) to the WhtapBot /mcp endpoint.
+// Bridges MCP clients that launch servers as local commands (stdio) to the WhtapBot /mcp endpoint.
 // Reads JSON-RPC messages from stdin (one per line), POSTs each to the server, writes replies to stdout.
 //
-//   WHTAPBOT_MCP_URL    e.g. https://whtapbot.tail1f517c.ts.net/mcp  (your machine must be on the tailnet)
+//   WHTAPBOT_MCP_URL    e.g. https://whtapbot.duckdns.org/mcp
 //   WHTAPBOT_MCP_TOKEN  the server's MCP_TOKEN
 import readline from 'node:readline';
 

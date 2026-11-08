@@ -1,7 +1,8 @@
-// Minimal MCP (Model Context Protocol) server over Streamable HTTP, so Claude can schedule WhatsApp messages.
+// Minimal MCP (Model Context Protocol) server over Streamable HTTP, so an AI assistant can schedule WhatsApp messages.
 // Stateless JSON-RPC 2.0: every POST is answered with one JSON body; no sessions, no SSE stream.
 import crypto from 'node:crypto';
-import { MCP_TOKEN, DEFAULT_TZ } from './config.js';
+import { MCP_TOKEN, DEFAULT_TZ, AUTH_ENABLED } from './config.js';
+import { verifyAccessToken, wwwAuthenticate } from './auth.js';
 import { messages, contacts, REPEAT_RULES } from './db.js';
 import { wa, normalizeRecipient, listGroups } from './whatsapp.js';
 import { toLocalString, isValidTz } from './time.js';
@@ -279,10 +280,14 @@ async function handleOne(msg) {
 const digest = (s) => crypto.createHash('sha256').update(s).digest();
 
 export function mcpRoute(req, res) {
-  if (!MCP_TOKEN) return res.status(404).json({ error: 'MCP is disabled. Set MCP_TOKEN on the server to enable it.' });
+  if (!MCP_TOKEN && !AUTH_ENABLED) return res.status(404).json({ error: 'MCP is disabled. Set MCP_TOKEN (or enable sign-in) on the server to use it.' });
+  // Accepts an OAuth access token (connectors) or, if configured, the static MCP_TOKEN (scripts, local clients).
   const [scheme, given = ''] = (req.headers.authorization ?? '').split(' ');
-  if (scheme !== 'Bearer' || !crypto.timingSafeEqual(digest(given), digest(MCP_TOKEN))) {
-    return res.set('WWW-Authenticate', 'Bearer realm="WhtapBot"').status(401).json({ error: 'Invalid or missing bearer token.' });
+  const ok = scheme === 'Bearer' && given && ((MCP_TOKEN && crypto.timingSafeEqual(digest(given), digest(MCP_TOKEN))) || (AUTH_ENABLED && verifyAccessToken(given)));
+  if (!ok) {
+    if (AUTH_ENABLED) res.set('WWW-Authenticate', wwwAuthenticate);
+    else res.set('WWW-Authenticate', 'Bearer realm="WhtapBot"');
+    return res.status(401).json({ error: 'Invalid or missing bearer token.' });
   }
   if (req.method !== 'POST') return res.set('Allow', 'POST').status(405).json({ error: 'Use POST.' });
 

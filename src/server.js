@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { PORT, HOST, APP_PASSWORD, MCP_TOKEN, DEFAULT_TZ, UPLOAD_MAX_MB, BACKUP_AT_UTC, BACKUP_KEEP } from './config.js';
+import { PORT, HOST, MCP_TOKEN, AUTH_ENABLED, PUBLIC_URL, DISABLE_WHATSAPP, DEFAULT_TZ, UPLOAD_MAX_MB, BACKUP_AT_UTC, BACKUP_KEEP } from './config.js';
 import { messages, contacts, templates, uploads, settings, REPEAT_RULES } from './db.js';
 import { wa, connect, logout, normalizeRecipient, listGroups } from './whatsapp.js';
 import { startScheduler } from './scheduler.js';
@@ -13,24 +13,24 @@ import { registerUpload } from './media.js';
 import { shiftInstant, nextOccurrence } from './time.js';
 import { toApi, parseMessage, iso } from './messageApi.js';
 import { mcpRoute } from './mcp.js';
+import { authRouter, requireSignIn } from './auth.js';
 
 const app = express();
 app.use(express.json({ limit: '100kb' }));
 
-// MCP endpoint for Claude: has its own bearer-token auth, so it sits before the (optional) basic-auth gate.
-app.all('/mcp', mcpRoute);
+app.set('trust proxy', 1); // the reverse proxy (same machine) terminates HTTPS and sets X-Forwarded-For
+app.disable('x-powered-by');
+app.use((_req, res, next) => {
+  res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'same-origin' });
+  next();
+});
+app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
-if (APP_PASSWORD) {
-  const expected = Buffer.from(APP_PASSWORD);
-  app.use((req, res, next) => {
-    const [scheme, token] = (req.headers.authorization ?? '').split(' ');
-    if (scheme === 'Basic' && token) {
-      const given = Buffer.from(Buffer.from(token, 'base64').toString().split(':').slice(1).join(':'));
-      if (given.length === expected.length && crypto.timingSafeEqual(given, expected)) return next();
-    }
-    res.set('WWW-Authenticate', 'Basic realm="WhtapBot"').status(401).send('Authentication required');
-  });
-}
+// MCP endpoint: does its own bearer/OAuth check, so it sits before the cookie sign-in gate.
+app.all('/mcp', mcpRoute);
+// Google sign-in, OAuth endpoints for MCP connectors, then the gate that protects everything below.
+app.use(authRouter);
+app.use(requireSignIn);
 
 app.get('/api/status', (_req, res) => {
   res.json({ whatsapp: wa, serverTime: iso(Date.now()), defaultTz: DEFAULT_TZ });
@@ -264,12 +264,15 @@ app.post('/api/logout', async (_req, res) => {
 app.use(express.static(path.join(path.dirname(fileURLToPath(import.meta.url)), '../public')));
 
 app.listen(PORT, HOST, () => {
-  if (MCP_TOKEN) console.log('MCP endpoint enabled at /mcp');
+  console.log(AUTH_ENABLED ? `Sign-in with Google is required (public address ${PUBLIC_URL}).` : 'WARNING: sign-in is OFF (no GOOGLE_CLIENT_ID). Only run like this on localhost.');
+  if (MCP_TOKEN || AUTH_ENABLED) console.log('MCP endpoint enabled at /mcp');
   console.log(`WhtapBot running at http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
 });
 
-connect().catch((err) => console.error('[whatsapp] failed to start', err));
-startScheduler();
-startAlerts();
+if (!DISABLE_WHATSAPP) {
+  connect().catch((err) => console.error('[whatsapp] failed to start', err));
+  startScheduler();
+  startAlerts();
+}
 startBackupSchedule();
 setInterval(() => uploads.cleanupOrphans(), 3600_000);

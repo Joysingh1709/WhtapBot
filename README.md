@@ -16,7 +16,8 @@ the server process is running, so for "laptop closed" use, deploy it (see below)
 - **Alerts** via [ntfy](https://ntfy.sh) (and optionally WhatsApp to yourself): WhatsApp disconnected, message failed/missed, server restarted
 - **Heartbeat** for an external dead-man's switch (e.g. healthchecks.io) so you learn if the whole VM goes down
 - **Nightly encrypted backups** of the queue, WhatsApp login and pending attachments
-- **MCP server** – ask Claude "message Mom happy birthday tomorrow at 9" and it schedules it (see below)
+- **MCP server with OAuth sign-in** – connect an AI assistant and just say "message Mom happy birthday tomorrow at 9" (see below)
+- **Google sign-in** – the app is public on the internet but only your Google account gets in; sessions persist across restarts
 - **Installable PWA** – "Add to Home Screen" for a full-screen phone app
 
 ## Run locally
@@ -37,11 +38,13 @@ Needs Node 22.13+. For voice-note conversion locally, install `ffmpeg` (the Dock
 | `HOST` | `127.0.0.1` | Bind address (Docker uses `0.0.0.0`) |
 | `DATA_DIR` | `./data` | WhatsApp session, SQLite queue, attachments, backups. **Keep on a persistent volume.** |
 | `DEFAULT_TZ` | `UTC` | Timezone for messages that don't specify one (e.g. `Asia/Kolkata`) |
-| `APP_PASSWORD` | _(none)_ | If set, HTTP basic auth with this password. Set it if the app is reachable from the public internet. |
 | `MAX_LATE_MINUTES` | `120` | Messages overdue by more than this (server was off) are marked `missed` instead of sent. `0` = always send. |
 | `BACKUP_PASSPHRASE` | _(none)_ | Enables nightly backups; 12+ characters. **Store a copy outside the server** – backups can't be opened without it. |
 | `BACKUP_AT_UTC` / `BACKUP_KEEP` | `21:30` / `14` | Backup time (UTC) and how many to keep |
-| `MCP_TOKEN` | _(none)_ | Switches on the MCP endpoint `POST /mcp` for Claude; clients must send `Authorization: Bearer <MCP_TOKEN>`. Use 24+ random characters. |
+| `PUBLIC_URL` | _(none)_ | The public https address, e.g. `https://whtapbot.duckdns.org`. Required when sign-in is on. |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | _(none)_ | A Google OAuth *web* client. **Setting the client id turns sign-in on**; without it the app is open (fine on localhost only). Redirect URI: `<PUBLIC_URL>/auth/google/callback`. |
+| `ALLOWED_EMAILS` | _(none)_ | Comma-separated Google accounts allowed in. Everyone else is refused. |
+| `MCP_TOKEN` | _(none)_ | Optional static bearer token for `/mcp` (scripts, local clients). OAuth sign-in works without it. |
 | `UPLOAD_MAX_MB` | `64` | Largest attachment. WhatsApp itself limits photos/videos/audio to ~16 MB (documents can be larger). |
 
 Alerts, topic and heartbeat are configured in the app under **Settings** (stored in the database).
@@ -53,12 +56,25 @@ deploy/setup-vm.sh      # run ON the VM once (swap + Docker):  ssh ... 'bash -s'
 deploy/deploy.sh <vm-ip>  # run on your Mac: copies the app, builds the image, restarts the container
 ```
 
-Put secrets in `~/whtapbot.env` **on the VM** (`BACKUP_PASSPHRASE=...`, `DEFAULT_TZ=...`); `deploy.sh` passes it to the container.
-The app listens only on `127.0.0.1:3000` on the VM. Reach it through an SSH tunnel, or privately over Tailscale:
+Secrets and settings live in `~/whtapbot.env` **on the VM** (`BACKUP_PASSPHRASE`, `DEFAULT_TZ`, `PUBLIC_URL`, `GOOGLE_CLIENT_ID`,
+`GOOGLE_CLIENT_SECRET`, `ALLOWED_EMAILS`, …); `deploy.sh` passes it to the container. The app itself listens only on
+`127.0.0.1:3000`; a reverse proxy on the VM terminates HTTPS.
 
-```bash
-sudo tailscale serve --bg 3000      # on the VM → https://<machine>.<tailnet>.ts.net (tailnet devices only)
-```
+### Public HTTPS address (free)
+
+1. **Name:** create a free subdomain at [duckdns.org](https://www.duckdns.org) and point it at the VM's public IP.
+2. **Ports:** allow TCP 80 and 443 in the VCN's security list (Oracle console) and in the VM firewall
+   (`sudo iptables -I INPUT 6 -p tcp -m multiport --dports 80,443 -j ACCEPT && sudo netfilter-persistent save`).
+3. **HTTPS:** run Caddy; it fetches and renews the certificate by itself:
+   ```bash
+   mkdir -p ~/caddy && printf 'whtapbot.duckdns.org {\n\tencode zstd gzip\n\treverse_proxy 127.0.0.1:3000\n}\n' > ~/caddy/Caddyfile
+   sudo docker run -d --name caddy --restart unless-stopped --network host \
+     -v ~/caddy/Caddyfile:/etc/caddy/Caddyfile:ro -v caddy_data:/data -v caddy_config:/config caddy:2
+   ```
+4. **Sign-in:** in Google Cloud Console create an OAuth client (type *Web application*) with redirect URI
+   `https://<your-name>.duckdns.org/auth/google/callback`, add your Google account as a test user, and put the client id/secret,
+   `PUBLIC_URL` and `ALLOWED_EMAILS` in `~/whtapbot.env`. **Do not start the proxy before sign-in is configured** – without a client id
+   the app has no login.
 
 ### Alerts
 
@@ -84,38 +100,34 @@ docker run --rm -v whtapbot-data:/data -v "$PWD":/b -e BACKUP_PASSPHRASE=... wht
 
 or locally: `BACKUP_PASSPHRASE=... node src/restore.js backup.wbk ./data`.
 
-## Use it from Claude (MCP)
+## Use it from an AI assistant (MCP)
 
-WhtapBot speaks MCP over HTTP at `/mcp`, so Claude can schedule, list, edit, cancel and send messages for you.
+WhtapBot is an MCP server at `<PUBLIC_URL>/mcp`, so an assistant can schedule, list, edit, cancel and send messages for you.
 Tools: `whatsapp_status`, `find_contact`, `schedule_message`, `list_scheduled_messages`, `update_scheduled_message`,
 `cancel_scheduled_message`, `send_message_now`. Attachments are not available through MCP.
 
-1. Generate a token and put it in the server's env file, then redeploy:
-   `openssl rand -hex 24 > ~/.whtapbot-mcp-token` and add `MCP_TOKEN=<that value>` to `~/whtapbot.env` on the VM.
-2. Connect Claude (your computer must be on the tailnet, since the server is private):
+**Connectors with OAuth (recommended).** Add a custom connector / remote MCP server in your assistant and give it
+`https://<your-name>.duckdns.org/mcp`. The assistant discovers the OAuth endpoints itself, registers, and opens a browser tab:
+sign in with Google, press **Allow**, done. Access tokens last an hour and refresh automatically for 90 days; everything is stored on
+the data volume, so redeploys don't disconnect it.
 
-   **Claude Code**
-   ```bash
-   claude mcp add --transport http whtapbot https://<machine>.<tailnet>.ts.net/mcp \
-     --header "Authorization: Bearer $(cat ~/.whtapbot-mcp-token)"
-   ```
+**Static token (scripts, local clients).** Set `MCP_TOKEN` and send `Authorization: Bearer <token>`. For clients that only launch local
+commands, `tools/mcp-stdio.mjs` bridges stdio to the endpoint:
 
-   **Claude Desktop** – add to `claude_desktop_config.json` (Settings → Developer → Edit config), then restart it:
-   ```json
-   { "mcpServers": { "whtapbot": {
-       "command": "node",
-       "args": ["/path/to/WhtapBot/tools/mcp-stdio.mjs"],
-       "env": { "WHTAPBOT_MCP_URL": "https://<machine>.<tailnet>.ts.net/mcp", "WHTAPBOT_MCP_TOKEN": "<token>" } } } }
-   ```
-3. Ask: "Schedule a message to Mom saying happy birthday every year on Nov 12 at 9am."
+```json
+{ "mcpServers": { "whtapbot": {
+    "command": "node", "args": ["/path/to/WhtapBot/tools/mcp-stdio.mjs"],
+    "env": { "WHTAPBOT_MCP_URL": "https://<your-name>.duckdns.org/mcp", "WHTAPBOT_MCP_TOKEN": "<token>" } } } }
+```
 
-The token is the only thing protecting the endpoint, so treat it like a password. claude.ai's web/mobile connectors need a
-public URL with OAuth, which this simple bearer-token server does not provide.
+The OAuth server (`src/auth.js`) implements discovery (RFC 9728 / 8414), dynamic client registration (RFC 7591), authorization code +
+PKCE (S256 only), consent, refresh-token rotation. `npm test` exercises the whole flow against a fake Google.
 
 ## Notes and risks
 
 - Uses [Baileys](https://github.com/WhiskeySockets/Baileys), an **unofficial** WhatsApp Web client. It's against WhatsApp's
   terms; accounts that send bulk or unsolicited messages can be banned. Keep volume low and message people who know you.
+- Because the app is on the public internet, the Google sign-in is the only lock. Keep `ALLOWED_EMAILS` to yourself and keep the OAuth client secret private.
 - The session in `DATA_DIR/auth` (and any backup) is equivalent to being logged in to your WhatsApp. Treat it like a password.
 - Delivery: if WhatsApp is disconnected a message stays queued; failed sends retry up to 4 times (after 5 s, 20 s, 60 s);
   a number not on WhatsApp fails immediately; a crash mid-send is flagged `failed` rather than risking a duplicate.

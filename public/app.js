@@ -47,6 +47,7 @@ async function api(path, opts = {}) {
     body: opts.body && typeof opts.body !== 'string' && !(opts.body instanceof Blob) ? JSON.stringify(opts.body) : opts.body,
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && state.me) { location.href = '/login?next=' + encodeURIComponent(location.pathname); throw new Error('Signed out.'); }
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
 }
@@ -267,7 +268,8 @@ function connectionView() {
       <button class="btn danger" data-act="logout">Disconnect WhatsApp</button>`
     : wa.status === 'qr' ? `<div class="qr"><img src="${wa.qr}" alt="QR code"><p class="muted">On your phone: WhatsApp → Settings → Linked devices → Link a device, then scan this code.</p></div>`
     : '<p class="muted">Connecting to WhatsApp… a QR code will appear here if you need to link your phone.</p>';
-  return `<div class="page"><div class="card"><h2>WhatsApp connection</h2>${info}</div></div>`;
+  const account = state.me ? `<div class="card"><h2>Account</h2><p class="muted">Signed in as ${esc(state.me)}.</p><button class="btn" data-act="signout">Sign out</button></div>` : '';
+  return `<div class="page"><div class="card"><h2>WhatsApp connection</h2>${info}</div>${account}</div>`;
 }
 
 let installPrompt = null;
@@ -774,6 +776,7 @@ $('view').addEventListener('click', async (e) => {
       case 'delTpl': await api('/templates/' + id, { method: 'DELETE' }); await loadTemplates(); return renderView();
       case 'msgTo': return openModal({ prefill: { recipient: el.dataset.r, name: el.dataset.n } });
       case 'delContact': await api('/contacts/' + encodeURIComponent(el.dataset.r), { method: 'DELETE' }); await loadContacts(); return renderView();
+      case 'signout': await fetch('/auth/logout', { method: 'POST' }); location.href = '/login'; return;
       case 'logout': if (confirm('Disconnect WhatsApp? Pending messages stay queued but will not send until you link again.')) { await api('/logout', { method: 'POST' }); poll(true); } return;
       case 'genTopic': { const b = crypto.getRandomValues(new Uint8Array(10)); $('aTopic').value = 'whtapbot-' + [...b].map((x) => x.toString(16).padStart(2, '0')).join(''); return; }
       case 'saveAlerts': {
@@ -835,6 +838,7 @@ $('menuBtn').innerHTML = ic('left'); $('menuBtn').setAttribute('aria-label', 'Ba
 $('menuBtn').onclick = () => (location.hash = '#more');
 $('closeNav').onclick = () => document.body.classList.remove('nav-open');
 
+fetch('/auth/me').then((r) => (r.ok ? r.json() : null)).then((u) => { if (u?.email) { state.me = u.email; if (state.view === 'connection') renderView(); } }).catch(() => {});
 route();
 poll(true);
 setInterval(poll, 3000);

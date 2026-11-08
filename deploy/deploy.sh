@@ -16,5 +16,5 @@ $SSH "ubuntu@$HOST" 'cd whtapbot && sudo docker build -t whtapbot . \
        -p 127.0.0.1:3000:3000 -v whtapbot-data:/data whtapbot \
   && sleep 4 && sudo docker logs --tail 5 whtapbot'
 echo
-echo "Deployed. If you use Tailscale Serve the app is at your https://<name>.ts.net address; otherwise tunnel with:"
+echo "Deployed. The app is behind the HTTPS reverse proxy at your PUBLIC_URL; for a private look without it, tunnel with:"
 echo "  ssh -i $KEY -L 3001:localhost:3000 ubuntu@$HOST   then visit http://localhost:3001"

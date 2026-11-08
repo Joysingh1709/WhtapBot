@@ -1,6 +1,6 @@
 // Minimal service worker: makes the app installable and keeps the shell available if the network blips.
 // API calls are never cached (they must always be live).
-const CACHE = 'whtapbot-shell-v3';
+const CACHE = 'whtapbot-shell-v4';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'nl.js', 'mobile.js', 'manifest.webmanifest', 'icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {
@@ -14,7 +14,7 @@ self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.startsWith('/api/')) return;
   e.respondWith(
     fetch(e.request)
-      .then((res) => { if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); } return res; })
+      .then((res) => { if (res.ok && !res.redirected) {  // a redirect means "signed out → login page": never cache that const copy = res.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); } return res; })
       .catch(() => caches.match(e.request).then((r) => r || caches.match('index.html')))
   );
 });
